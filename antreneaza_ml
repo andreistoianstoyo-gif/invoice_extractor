@@ -1,0 +1,219 @@
+import random
+import numpy as np
+import spacy
+from spacy.training import Example
+from spacy.scorer import Scorer
+from spacy.util import filter_spans
+
+# 1. Inițializăm generatorul modern de numere aleatorii din NumPy
+rng = np.random.default_rng(seed=42)
+
+# Baze de date de cuvinte din care generatorul va combina mii de variante
+CUVINTE_FIRME = ["ALFA", "BETA", "OMEGA", "TRANS", "AGRO", "TECH", "SOFT", "CONSTRUCT", "MED", "LOGISTIC", "GLOBAL", "EURO", "DANUBE", "CARPATI", "VERTEX", "NOVA", "APEX", "PRIME", "STUDIO", "SYSTEMS"]
+DOMENII_FIRME = ["SOLUTIONS", "GROUP", "DISTRIBUTION", "SERVICES", "LABS", "NETWORKS", "RETAIL", "CONSULTING", "PARTNERS", "HOLDING", "INDUSTRIES", "DIGITAL", "ENERGY", "DESIGN"]
+FORME_JURIDICE = ["S.R.L.", "SRL", "S.A.", "SA", "P.F.A.", "I.I.", "LTD", "INC.", "GMBH"]
+
+ETICHETE_FURNIZOR = ["Furnizor:", "Vanzator:", "Prestator:", "Emitent:", "Distribuitor:", "Firma:", "Unitate emitenta:", "Vendor:", "Billed by:", "From:", "Furnizor -", "Prestator -"]
+ETICHETE_CLIENT = ["Client:", "Cumparator:", "Beneficiar:", "Catre abonat:", "Catre:", "Bill to:", "Billed to:", "Customer:", "Client -", "Beneficiar -"]
+ETICHETE_CUI = ["CUI:", "CIF:", "C.U.I.:", "Cod Fiscal:", "Cod unic de inregistrare:", "VAT ID:", "Tax ID:", "CIF -"]
+ETICHETE_FACTURA = ["Factura nr:", "Factura fiscala nr.", "Seria si nr:", "Doc. Nr.:", "Numar factura:", "Invoice #", "Invoice No:", "Factura:"]
+ETICHETE_DATA = ["Data:", "Data emiterii:", "Data facturarii:", "Data document:", "Invoice Date:", "Date:"]
+ETICHETE_TOTAL = ["Total de plata:", "Total General:", "Total factura:", "Suma de plata:", "Valoare totala:", "De achitat:", "Total Due:", "Grand Total:", "Amount Due:"]
+MONEDE = ["RON", "Lei", "EUR", "USD"]
+
+
+def genereaza_nume_firma():
+    """Compune un nume de firmă unic și realist."""
+    prefix = rng.choice(["SC ", "S.C. ", "", "", ""])
+    cuv1 = rng.choice(CUVINTE_FIRME)
+    cuv2 = rng.choice(DOMENII_FIRME)
+    forma = rng.choice(FORME_JURIDICE)
+    return f"{prefix}{cuv1} {cuv2} {forma}"
+
+
+def genereaza_valori_factura():
+    """Generează valorile randomizate ale unei facturi."""
+    furnizor = genereaza_nume_firma()
+    client = genereaza_nume_firma()
+    while client == furnizor:
+        client = genereaza_nume_firma()
+
+    prefix_cui = rng.choice(["RO", "RO ", "", "DE", "GB"])
+    cui = f"{prefix_cui}{rng.integers(1000000, 99999999)}"
+
+    serie = "".join(rng.choice(list("ABCDEFGHJKLMNPQRSTUVWXYZ"), size=rng.integers(2, 5)))
+    sep_nr = rng.choice(["-", "/", " ", ""])
+    nr_factura = f"{serie}{sep_nr}{rng.integers(100, 999999)}"
+
+    zi = f"{rng.integers(1, 29):02d}"
+    luna = f"{rng.integers(1, 13):02d}"
+    an = rng.choice(["2024", "2025", "2026"])
+    sep_data = rng.choice([".", "/", "-"])
+    data_factura = f"{zi}{sep_data}{luna}{sep_data}{an}"
+
+    # Generăm sume cu diverse formate (1.250,50 sau 1,250.50 sau 450,00)
+    suma_int = rng.integers(50, 25000)
+    zecimale = rng.choice(["00", "50", "40", "99", "25"])
+    stil_suma = rng.choice(["RO", "EN", "SIMPLU"])
+    if stil_suma == "RO" and suma_int >= 1000:
+        total_plata = f"{suma_int:,}".replace(",", ".") + f",{zecimale}"
+    elif stil_suma == "EN" and suma_int >= 1000:
+        total_plata = f"{suma_int:,}.{zecimale}"
+    else:
+        total_plata = f"{suma_int},{zecimale}"
+
+    return {
+        "FURNIZOR": furnizor,
+        "CLIENT": client,
+        "CUI": cui,
+        "NUMAR_FACTURA": nr_factura,
+        "DATA_FACTURA": data_factura,
+        "TOTAL_PLATA": total_plata
+    }
+
+
+def asambleaza_factura_text():
+    """Alege aleatoriu unul din 5 layout-uri complet diferite de factură."""
+    v = genereaza_valori_factura()
+    ef = rng.choice(ETICHETE_FURNIZOR)
+    ec = rng.choice(ETICHETE_CLIENT)
+    ecui = rng.choice(ETICHETE_CUI)
+    enr = rng.choice(ETICHETE_FACTURA)
+    ed = rng.choice(ETICHETE_DATA)
+    etot = rng.choice(ETICHETE_TOTAL)
+    moneda = rng.choice(MONEDE)
+
+    stil_layout = rng.integers(1, 6)
+
+    if stil_layout == 1:
+        # Layout 1: Clasic românesc (SmartBill / SAGA)
+        text = (
+            f"FACTURA FISCALA\n{enr} {v['NUMAR_FACTURA']} | {ed} {v['DATA_FACTURA']}\n\n"
+            f"{ef} {v['FURNIZOR']}\n{ecui} {v['CUI']}\nSediu: Str. Principala nr. {rng.integers(1, 150)}\n\n"
+            f"{ec} {v['CLIENT']}\n\n"
+            f"1. Servicii conform contract ......... {v['TOTAL_PLATA']} {moneda}\n"
+            f"{etot} {v['TOTAL_PLATA']} {moneda}"
+        )
+    elif stil_layout == 2:
+        # Layout 2: Modern / Telecom (FĂRĂ eticheta 'Furnizor:' în față!)
+        text = (
+            f"{v['FURNIZOR']}\n{ecui} {v['CUI']} | Reg. Com. J40/{rng.integers(100,999)}/2022\n\n"
+            f"{ec} {v['CLIENT']}\n"
+            f"{enr} {v['NUMAR_FACTURA']}\n{ed} {v['DATA_FACTURA']}\n\n"
+            f"Abonament lunar servicii business\n"
+            f"{etot} {v['TOTAL_PLATA']} {moneda}"
+        )
+    elif stil_layout == 3:
+        # Layout 3: Pe două coloane / Compact (Vânzător și Cumpărător pe linii apropiate)
+        text = (
+            f"{ef} {v['FURNIZOR']} ({ecui} {v['CUI']})\n"
+            f"{ec} {v['CLIENT']} (CUI Client: RO{rng.integers(100000, 999999)})\n"
+            f"--------------------------------------------------\n"
+            f"Document: {enr} {v['NUMAR_FACTURA']} din {ed} {v['DATA_FACTURA']}\n"
+            f"Valoare produse livrate. {etot} {v['TOTAL_PLATA']} {moneda}"
+        )
+    elif stil_layout == 4:
+        # Layout 4: Ordine inversată (Clientul apare înaintea Furnizorului sau în antet)
+        text = (
+            f"INVOICE / FACTURA\n{ed} {v['DATA_FACTURA']}\n{enr} {v['NUMAR_FACTURA']}\n\n"
+            f"From / {ef} {v['FURNIZOR']}\nTax Registration / {ecui} {v['CUI']}\n"
+            f"To / {ec} {v['CLIENT']}\n\n"
+            f"Net Amount: 100.00 {moneda} | VAT 19%\n"
+            f"{etot} {v['TOTAL_PLATA']} {moneda}"
+        )
+    else:
+        # Layout 5: Minimalist (fără etichetă la dată sau cu simboluri '=' în loc de ':')
+        text = (
+            f"{ef} {v['FURNIZOR']}\n{ecui} {v['CUI']}\n"
+            f"{enr} {v['NUMAR_FACTURA']} / {v['DATA_FACTURA']}\n"
+            f"{ec} {v['CLIENT']}\n\n"
+            f"Total produse si servicii\n{etot} = {v['TOTAL_PLATA']} {moneda}"
+        )
+
+    return text, v
+
+
+def creeaza_dataset_spacy(nlp_blank, numar_facturi=200):
+    """Generează facturile și calculează pozițiile exacte ale entităților."""
+    dataset = []
+
+    for _ in range(numar_facturi):
+        text, valori = asambleaza_factura_text()
+        doc = nlp_blank.make_doc(text)
+        spans = []
+
+        for eticheta, valoare_text in valori.items():
+            # Pentru TOTAL_PLATA folosim rfind() ca să luăm mereu suma de jos (de la Total),
+            # nu cea din tabelul de produse
+            if eticheta == "TOTAL_PLATA":
+                start_idx = text.rfind(valoare_text)
+            else:
+                start_idx = text.find(valoare_text)
+
+            if start_idx != -1:
+                end_idx = start_idx + len(valoare_text)
+                span = doc.char_span(start_idx, end_idx, label=eticheta, alignment_mode="contract")
+                if span is not None:
+                    spans.append(span)
+
+        # filter_spans elimină orice suprapunere accidentală între cuvinte
+        doc.ents = filter_spans(spans)
+        dataset.append(doc)
+
+    return dataset
+
+
+def evalueaza_modelul(nlp_model, date_test):
+    """Testează modelul pe facturi pe care NU le-a văzut la antrenament."""
+    exemple_test = []
+    for doc_corect in date_test:
+        doc_prezis = nlp_model(doc_corect.text)
+        exemple_test.append(Example(doc_prezis, doc_corect))
+
+    scorer = Scorer()
+    scoruri = scorer.score(exemple_test)
+    # ents_f este scorul F1 general (între 0 și 1), îl transformăm în procente
+    return scoruri["ents_f"] * 100
+
+
+def antreneaza_si_testeaza(numar_facturi=200, epoci=25, folder_salvare="model_facturi_ml"):
+    nlp_custom = spacy.blank("ro")
+    ner = nlp_custom.add_pipe("ner")
+
+    # 1. Generăm cele 200 de facturi variate
+    toate_datele = creeaza_dataset_spacy(nlp_custom, numar_facturi)
+
+    # 2. Înregistrăm etichetele în NER
+    for doc in toate_datele:
+        for ent in doc.ents:
+            ner.add_label(ent.label_)
+
+    # 3. Împărțim datele: 80% Antrenament (160 facturi) | 20% Test Orb (40 facturi)
+    limita_split = int(numar_facturi * 0.8)
+    date_antrenament = toate_datele[:limita_split]
+    date_test = toate_datele[limita_split:]
+
+    print(f"Am generat {len(date_antrenament)} facturi pentru ÎNVĂȚARE și {len(date_test)} facturi pentru TESTUL ORB.\n")
+
+    optimizer = nlp_custom.begin_training()
+
+    for epoca in range(epoci):
+        random.shuffle(date_antrenament)
+        pierderi = {}
+
+        # Antrenăm în calupuri (batches) de câte 8 facturi pentru stabilitate
+        for i in range(0, len(date_antrenament), 8):
+            batch_docs = date_antrenament[i:i+8]
+            exemple_batch = [Example(nlp_custom.make_doc(d.text), d) for d in batch_docs]
+            nlp_custom.update(exemple_batch, sgd=optimizer, drop=0.25, losses=pierderi)
+
+        if (epoca + 1) % 5 == 0 or epoca == 0:
+            acuratete_test = evalueaza_modelul(nlp_custom, date_test)
+            print(f"Epoca {epoca + 1:02d}/{epoci} | Loss (Antrenament): {pierderi['ner']:6.1f} | Acuratețe pe Facturi Noi (Test): {acuratete_test:.1f}%")
+
+    nlp_custom.to_disk(folder_salvare)
+    print(f"\nModelul a fost salvat în '{folder_salvare}'!")
+
+
+if __name__ == "__main__":
+    antreneaza_si_testeaza()
