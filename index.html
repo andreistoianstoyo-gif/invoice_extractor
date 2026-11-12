@@ -1,12 +1,10 @@
 <!DOCTYPE html>
-<html lang="ro">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FacturiML — Extracție Automată Facturi</title>
-  <!-- Tailwind CSS pentru design modern -->
+  <title>FacturiML — AI/ML Invoice Extractor</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- React & Babel pentru rulare directă în browser fără Node.js -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -17,25 +15,111 @@
   <script type="text/babel">
     const { useState, useMemo } = React;
 
-    // Transformă sumele românești ("1.785,00") în numere pentru calculul totalurilor
-    function parseazaSumaRO(text) {
-      if (!text || text === "Negasit") return 0;
-      const curat = String(text).trim().replace(/\./g, "").replace(",", ".");
+    // 1. Dicționarul de traduceri pentru interfață (RO & EN)
+    const TRADUCERI = {
+      ro: {
+        badge: "● Motor spaCy NER + Regex Activ (100% Local & Privat)",
+        title: "Extractor Inteligent de Facturi PDF în Excel",
+        btnDemo: "Încarcă Facturile Demo",
+        btnExcel: "Descarcă Excel (.xlsx)",
+        dropLoading: "Se analizează PDF-urile cu modelul ML...",
+        dropTitle: "Trage facturile PDF aici sau apasă pentru a selecta fișierele",
+        dropSub: "Procesare securizată în memoria RAM (Română & Engleză) — fișierele nu rămân pe server",
+        kpiCount: "Facturi Procesate",
+        kpiSub: "Subtotal Cumulat",
+        kpiVat: "Total TVA / VAT",
+        kpiTotal: "Total General Plată",
+        searchPlaceholder: "Caută după furnizor, client, CUI/VAT sau număr factură...",
+        clearTable: "Golește tabelul",
+        emptyTable: "Nicio factură încărcată. Trage PDF-uri mai sus sau apasă pe „Încarcă Facturile Demo”.",
+        notFound: "Negasit",
+        errServer: "Eroare la comunicarea cu serverul Python!",
+        headers: {
+          Fisier: "Fișier",
+          Furnizor: "Furnizor",
+          Client: "Client",
+          CUI: "CUI / CIF",
+          Numar_Factura: "Nr. Factură",
+          Data_Factura: "Data",
+          Subtotal: "Subtotal",
+          TVA_VAT: "TVA",
+          Total_Plata: "Total Plată"
+        }
+      },
+      en: {
+        badge: "● Custom spaCy NER + Regex Engine (100% In-Memory & Private)",
+        title: "Automated PDF Invoice to Excel Extractor",
+        btnDemo: "Load Demo Invoices",
+        btnExcel: "Download Excel (.xlsx)",
+        dropLoading: "Extracting data with ML model...",
+        dropTitle: "Drag & drop PDF invoices here, or click to browse",
+        dropSub: "Secure RAM processing (English & Romanian support) — zero file storage on server",
+        kpiCount: "Processed Invoices",
+        kpiSub: "Cumulative Subtotal",
+        kpiVat: "Total VAT / Tax",
+        kpiTotal: "Grand Total",
+        searchPlaceholder: "Search by vendor, client, Tax ID, or invoice number...",
+        clearTable: "Clear table",
+        emptyTable: "No invoices loaded yet. Drop PDF files above or click 'Load Demo Invoices'.",
+        notFound: "Not Found",
+        errServer: "Error communicating with the Python backend!",
+        headers: {
+          Fisier: "File",
+          Furnizor: "Vendor / From",
+          Client: "Client / Bill To",
+          CUI: "Tax ID / VAT",
+          Numar_Factura: "Invoice No.",
+          Data_Factura: "Date",
+          Subtotal: "Subtotal",
+          TVA_VAT: "VAT / Tax",
+          Total_Plata: "Total Amount"
+        }
+      }
+    };
+
+    // 2. Recunoaște automat atât sumele în format RO ("1.500,00"), cât și EN ("1,150.00")
+    function parseazaSumaUniversala(text) {
+      if (!text || text === "Negasit" || text === "Not Found") return 0;
+      let curat = String(text).trim().replace(/[^0-9.,-]/g, "");
+      if (!curat) return 0;
+
+      if (curat.includes(",") && curat.includes(".")) {
+        if (curat.lastIndexOf(",") > curat.lastIndexOf(".")) {
+          // Format RO: 1.500,00
+          curat = curat.replace(/\./g, "").replace(",", ".");
+        } else {
+          // Format EN: 1,150.00
+          curat = curat.replace(/,/g, "");
+        }
+      } else if (curat.includes(",")) {
+        const parti = curat.split(",");
+        if (parti[parti.length - 1].length === 2) {
+          curat = curat.replace(",", ".");
+        } else {
+          curat = curat.replace(/,/g, "");
+        }
+      }
+
       const nr = parseFloat(curat);
       return isNaN(nr) ? 0 : nr;
     }
 
-    function formateazaSumaRO(numar) {
-      return numar.toLocaleString("ro-RO", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    function formateazaSuma(numar, limba) {
+      const locale = limba === "ro" ? "ro-RO" : "en-US";
+      return numar.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
     function App() {
+      // Pornim implicit în "en" pentru Upwork (sau poți schimba în "ro")
+      const [limba, setLimba] = useState("en");
       const [facturi, setFacturi] = useState([]);
       const [seIncarca, setSeIncarca] = useState(false);
       const [cautare, setCautare] = useState("");
       const [dragActiv, setDragActiv] = useState(false);
 
-      // 1. Trimite PDF-urile încărcate către Python (/api/extract)
+      const t = TRADUCERI[limba];
+      const campuriTabel = ["Fisier", "Furnizor", "Client", "CUI", "Numar_Factura", "Data_Factura", "Subtotal", "TVA_VAT", "Total_Plata"];
+
       async function proceseazaFisiere(fisiereSelectate) {
         if (!fisiereSelectate || fisiereSelectate.length === 0) return;
         setSeIncarca(true);
@@ -53,13 +137,12 @@
             setFacturi((prev) => [...prev, ...date.results]);
           }
         } catch (err) {
-          alert("Eroare la comunicarea cu serverul Python!");
+          alert(t.errServer);
         } finally {
           setSeIncarca(false);
         }
       }
 
-      // 2. Încarcă facturile demo din folderul local 'invoices'
       async function incarcaDemoLocal() {
         setSeIncarca(true);
         try {
@@ -71,7 +154,6 @@
         }
       }
 
-      // 3. Permite editarea oricărei celule direct în tabel
       function actualizeazaCelula(index, camp, valoareNoua) {
         setFacturi((prev) => {
           const copie = [...prev];
@@ -84,24 +166,22 @@
         setFacturi((prev) => prev.filter((_, i) => i !== index));
       }
 
-      // 4. Trimite tabelul curent (cu tot cu editări) în Python și descarcă Excel-ul
       async function descarcaExcel() {
         if (facturi.length === 0) return;
         const raspuns = await fetch("/api/export-excel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ invoices: facturi }),
+          body: JSON.stringify({ invoices: facturi, lang: limba }),
         });
         const blob = await raspuns.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "raport_facturi.xlsx";
+        a.download = limba === "en" ? "extracted_invoices.xlsx" : "raport_facturi.xlsx";
         a.click();
         window.URL.revokeObjectURL(url);
       }
 
-      // Filtrare după bara de căutare
       const facturiFiltrate = useMemo(() => {
         return facturi.filter((f) =>
           Object.values(f).some((val) =>
@@ -110,13 +190,12 @@
         );
       }, [facturi, cautare]);
 
-      // Calculul automat pentru cardurile de sus
       const totaluri = useMemo(() => {
         return facturiFiltrate.reduce(
           (acc, f) => {
-            acc.subtotal += parseazaSumaRO(f.Subtotal);
-            acc.tva += parseazaSumaRO(f.TVA_VAT);
-            acc.total += parseazaSumaRO(f.Total_Plata);
+            acc.subtotal += parseazaSumaUniversala(f.Subtotal);
+            acc.tva += parseazaSumaUniversala(f.TVA_VAT);
+            acc.total += parseazaSumaUniversala(f.Total_Plata);
             return acc;
           },
           { subtotal: 0, tva: 0, total: 0 }
@@ -125,7 +204,6 @@
 
       return (
         <div className="max-w-7xl mx-auto px-6 py-8">
-          {/* Antetul SaaS */}
           <header className="flex flex-wrap items-center justify-between gap-4 pb-6 border-b border-slate-800">
             <div>
               <div className="flex items-center gap-3">
@@ -133,32 +211,50 @@
                   FacturiML
                 </span>
                 <span className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-full">
-                  ● Motor spaCy NER + Regex Activ (100% Local & Privat)
+                  {t.badge}
                 </span>
               </div>
-              <h1 className="text-2xl font-bold mt-2 text-white">
-                Extractor Inteligent de Facturi PDF în Excel
-              </h1>
+              <h1 className="text-2xl font-bold mt-2 text-white">{t.title}</h1>
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Comutatorul de limbă EN / RO */}
+              <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-1">
+                <button
+                  onClick={() => setLimba("en")}
+                  className={`px-3 py-1 rounded-md text-xs font-bold transition ${
+                    limba === "en" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  EN
+                </button>
+                <button
+                  onClick={() => setLimba("ro")}
+                  className={`px-3 py-1 rounded-md text-xs font-bold transition ${
+                    limba === "ro" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  RO
+                </button>
+              </div>
+
               <button
                 onClick={incarcaDemoLocal}
                 className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium transition"
               >
-                Încarcă cele 8 Facturi Demo
+                {t.btnDemo}
               </button>
               <button
                 onClick={descarcaExcel}
                 disabled={facturi.length === 0}
                 className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-sm font-semibold shadow-lg transition"
               >
-                Descarcă Excel (.xlsx)
+                {t.btnExcel}
               </button>
             </div>
           </header>
 
-          {/* Zona Drag & Drop pentru Clienți */}
+          {/* Drag & Drop */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragActiv(true); }}
             onDragLeave={() => setDragActiv(false)}
@@ -183,48 +279,44 @@
             />
             <label htmlFor="input-pdf" className="cursor-pointer block">
               <p className="text-lg font-semibold text-white">
-                {seIncarca
-                  ? "Se analizează PDF-urile cu modelul ML..."
-                  : "Trage facturile PDF aici sau apasă pentru a selecta fișierele"}
+                {seIncarca ? t.dropLoading : t.dropTitle}
               </p>
-              <p className="text-sm text-slate-400 mt-1">
-                Procesare securizată în memoria RAM — fișierele tale nu rămân stocate pe server
-              </p>
+              <p className="text-sm text-slate-400 mt-1">{t.dropSub}</p>
             </label>
           </div>
 
-          {/* Carduri cu Totaluri */}
+          {/* Carduri KPI */}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mt-6">
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <span className="text-xs text-slate-400 uppercase">Facturi Procesate</span>
+              <span className="text-xs text-slate-400 uppercase">{t.kpiCount}</span>
               <p className="text-2xl font-bold text-white mt-1">{facturiFiltrate.length}</p>
             </div>
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <span className="text-xs text-slate-400 uppercase">Subtotal Cumulat</span>
+              <span className="text-xs text-slate-400 uppercase">{t.kpiSub}</span>
               <p className="text-2xl font-bold text-slate-200 mt-1">
-                {formateazaSumaRO(totaluri.subtotal)} RON
+                {formateazaSuma(totaluri.subtotal, limba)}
               </p>
             </div>
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <span className="text-xs text-slate-400 uppercase">Total TVA</span>
+              <span className="text-xs text-slate-400 uppercase">{t.kpiVat}</span>
               <p className="text-2xl font-bold text-indigo-400 mt-1">
-                {formateazaSumaRO(totaluri.tva)} RON
+                {formateazaSuma(totaluri.tva, limba)}
               </p>
             </div>
             <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl">
-              <span className="text-xs text-slate-400 uppercase">Total General Plată</span>
+              <span className="text-xs text-slate-400 uppercase">{t.kpiTotal}</span>
               <p className="text-2xl font-bold text-emerald-400 mt-1">
-                {formateazaSumaRO(totaluri.total)} RON
+                {formateazaSuma(totaluri.total, limba)}
               </p>
             </div>
           </div>
 
-          {/* Bara de căutare și Tabelul Editabil */}
+          {/* Tabelul de date */}
           <div className="mt-6 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
             <div className="p-4 border-b border-slate-800 flex flex-wrap justify-between items-center gap-4">
               <input
                 type="text"
-                placeholder="Caută după furnizor, client, CUI sau număr factură..."
+                placeholder={t.searchPlaceholder}
                 value={cautare}
                 onChange={(e) => setCautare(e.target.value)}
                 className="bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm text-white w-full sm:w-96 focus:outline-none focus:border-indigo-500"
@@ -234,7 +326,7 @@
                   onClick={() => setFacturi([])}
                   className="text-xs text-rose-400 hover:text-rose-300"
                 >
-                  Golește tabelul
+                  {t.clearTable}
                 </button>
               )}
             </div>
@@ -243,15 +335,9 @@
               <table className="w-full text-left border-collapse text-sm">
                 <thead>
                   <tr className="bg-slate-950/80 text-slate-400 text-xs uppercase border-b border-slate-800">
-                    <th className="p-3">Fișier</th>
-                    <th className="p-3">Furnizor</th>
-                    <th className="p-3">Client</th>
-                    <th className="p-3">CUI</th>
-                    <th className="p-3">Nr. Factură</th>
-                    <th className="p-3">Data</th>
-                    <th className="p-3">Subtotal</th>
-                    <th className="p-3">TVA</th>
-                    <th className="p-3">Total Plată</th>
+                    {campuriTabel.map((camp) => (
+                      <th key={camp} className="p-3">{t.headers[camp]}</th>
+                    ))}
                     <th className="p-3"></th>
                   </tr>
                 </thead>
@@ -259,28 +345,31 @@
                   {facturiFiltrate.length === 0 ? (
                     <tr>
                       <td colSpan="10" className="p-8 text-center text-slate-500">
-                        Nicio factură încărcată. Trage PDF-uri mai sus sau apasă pe „Încarcă cele 8 Facturi Demo”.
+                        {t.emptyTable}
                       </td>
                     </tr>
                   ) : (
                     facturiFiltrate.map((f, idx) => (
                       <tr key={idx} className="hover:bg-slate-800/40">
-                        {["Fisier", "Furnizor", "Client", "CUI", "Numar_Factura", "Data_Factura", "Subtotal", "TVA_VAT", "Total_Plata"].map((camp) => (
-                          <td key={camp} className="p-2">
-                            <input
-                              value={f[camp]}
-                              onChange={(e) => actualizeazaCelula(idx, camp, e.target.value)}
-                              className={`bg-transparent px-2 py-1 rounded border border-transparent hover:border-slate-700 focus:border-indigo-500 focus:bg-slate-950 focus:outline-none w-full ${
-                                f[camp] === "Negasit" ? "text-rose-400 font-semibold" : "text-slate-200"
-                              }`}
-                            />
-                          </td>
-                        ))}
+                        {campuriTabel.map((camp) => {
+                          const esteNegasit = f[camp] === "Negasit" || f[camp] === "Not Found";
+                          const valoareAfisata = esteNegasit ? t.notFound : f[camp];
+                          return (
+                            <td key={camp} className="p-2">
+                              <input
+                                value={valoareAfisata}
+                                onChange={(e) => actualizeazaCelula(idx, camp, e.target.value)}
+                                className={`bg-transparent px-2 py-1 rounded border border-transparent hover:border-slate-700 focus:border-indigo-500 focus:bg-slate-950 focus:outline-none w-full ${
+                                  esteNegasit ? "text-rose-400 font-semibold" : "text-slate-200"
+                                }`}
+                              />
+                            </td>
+                          );
+                        })}
                         <td className="p-2 text-right">
                           <button
                             onClick={() => stergeRand(idx)}
                             className="text-slate-500 hover:text-rose-400 px-2"
-                            title="Șterge rândul"
                           >
                             ✕
                           </button>
