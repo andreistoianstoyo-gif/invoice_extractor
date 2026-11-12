@@ -4,46 +4,54 @@ import pdfplumber
 import spacy
 import pandas as pd
 
-# 1. Încărcăm modelul general RO și modelul nostru ML Custom antrenat
+# 1. Încărcăm modelul general și modelul nostru ML Custom bilingv
 nlp_general = spacy.load("ro_core_news_sm")
 nlp_custom = spacy.load("model_facturi_ml") if os.path.exists("model_facturi_ml") else None
 
-# 2. Dicționar extins (Română + Engleză + Coloana Client)
+# 2. Dicționar bilingv (Română + Engleză) fără erori de formatare
 SINONIME_CAMPURI = {
     "Furnizor": [
-        r"(?:furnizor|firma|distribuitor|vanzator|prestator|emitent|unitate\s+emitenta|vendor|billed\s+by|company|from)\s*[:\-]\s*([^\n\r\|]+)",
+        # Prinde Furnizorul pe același rând SAU pe rândul imediat următor (ex: "From:\nAcme Corp")
+        r"(?:furnizor|firma|distribuitor|vanzator|prestator|emitent|unitate\s+emitenta|vendor|billed\s+by|billed\s+from|company|supplier|from)\s*[:\-]\s*\n?\s*([A-Za-z0-9][^\n\r\|]+)",
     ],
     "Client": [
-        r"(?:client|cumparator|beneficiar|catre\s+abonat|catre|billed\s+to|bill\s+to|customer|to)\s*[:\-]\s*([^\n\r\(\|]+)",
+        # Prinde Clientul pe același rând SAU pe rândul următor (ex: "Billed To:\nGlobal Tech LLC")
+        r"(?:client|cumparator|beneficiar|catre\s+abonat|catre|billed\s+to|bill\s+to|ship\s+to|customer|client\s+name)\s*[:\-]?\s*\n?\s*([A-Za-z0-9][^\n\r\(\|]+)",
     ],
     "CUI": [
-        r"(?:c\.?u\.?i\.?|c\.?i\.?f\.?|cod\s+(?:inregistrare\s+)?fiscala?|cod\s+unic\s+de\s+inregistrare|vat\s*(?:id|no|number|reg)?|tax\s*id|reg\.?\s*no)\s*[:\-]?\s*(RO\s*\d+|\d+|[A-Z]{2}\s*\d+)",
+        # Prinde CUI/CIF românesc, VAT european (GB/DE/FR) și EIN/Tax ID american (ex: 12-3456789)
+        r"(?:c\.?u\.?i\.?|c\.?i\.?f\.?|cod\s+(?:inregistrare\s+)?fiscala?|cod\s+unic\s+de\s+inregistrare|vat\s*(?:id|no|number|reg)?|tax\s*id|ein|gst\s*no|reg\.?\s*no)\s*[:\-\#]?\s*([A-Z]{2}\s*[0-9A-Z\s\-]{5,15}|\d{2}\-\d{7}|\d{6,12})",
     ],
     "Numar_Factura": [
+        # Prinde "Seria: SBL Nr: 10452"
         r"seria\s*[:\-]?\s*([A-Za-z0-9]+\s+nr\.?\s*[:\-]?\s*[A-Za-z0-9\-]+)",
-        r"(?:serie\s+si\s+numar|factura\s+fiscala\s+nr|factura\s+nr|nr\.\s*factura|numar\s+factura|doc\.\s*nr|invoice\s*(?:no|number|id|#)|factura)\s*[:\-\.\s]+\s*([A-Za-z0-9\-\/]+)",
+        # Prinde atât "Factura nr: 123", cât și "Invoice # INV-2048" sau "Invoice No. 2048"
+        r"(?:serie\s+si\s+numar|factura\s+fiscala\s+nr|factura\s+nr|nr\.\s*factura|numar\s+factura|doc\.\s*nr|invoice\s*(?:no|number|id|\#)?|bill\s*(?:no|\#)|factura)\s*[:\-\.\#\s]+\s*([A-Z0-9]+\-[A-Z0-9\-]+|[A-Za-z0-9\/]{3,20})",
     ],
     "Data_Factura": [
-        r"(?:data\s+emiterii|data\s+facturarii|data\s+document|data|invoice\s+date|date)\s*[:\-]?\s*(\d{1,2}[\.\/\-]\d{1,2}[\.\/\-]\d{4}|\d{4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4})",
+        # Prinde 12.10.2026, 2026-10-12, March 14, 2025 și 14 Mar 2025
+        r"(?:data\s+emiterii|data\s+facturarii|data\s+document|data|invoice\s+date|issue\s+date|issued\s+on|date)\s*[:\-]?\s*(\d{1,2}[\.\/\-]\d{1,2}[\.\/\-]\d{4}|\d{4}[\.\/\-]\d{1,2}[\.\/\-]\d{1,2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*,?\s+\d{4})",
     ],
     "Subtotal": [
-        r"(?:subtotal|sub-total|total\s+fara\s+tva|baza\s+impozabila|valoare\s+fara\s+tva|net\s+amount)\s*[:\-\=]?\s*(?:RON|LEI|EUR|USD|\$|€|£)?\s*([\d\.,]+)",
+        r"(?:subtotal|sub-total|total\s+fara\s+tva|baza\s+impozabila|valoare\s+fara\s+tva|net\s+amount|sub\s+total)\s*[:\-\=]?\s*(?:RON|LEI|EUR|USD|GBP|\$|€|£)?\s*([\d\.,]+)",
     ],
     "TVA_VAT": [
-        r"(?<!fara\s)(?:valoare\s+tva|tva|vat|sales\s+tax|tax)(?:\s*\(?[\d\.,]+%\)?)?\s*[:\-\=\.]+\s*(?:RON|LEI|EUR|USD|\$|€|£)?\s*([\d\.,]+)(?![\d\.,]|\s*%)",
+        # Ignoră "Total fara TVA" și procentul (19%), extrăgând doar suma în bani
+        r"(?<!fara\s)(?:valoare\s+tva|tva|vat|sales\s+tax|tax|gst)(?:\s*\(?[\d\.,]+%\)?)?\s*[:\-\=\.]+\s*(?:RON|LEI|EUR|USD|GBP|\$|€|£)?\s*([\d\.,]+)(?![\d\.,]|\s*%)",
     ],
     "Total_Plata": [
-        r"(?:total\s+de\s+plata|total\s+general|total\s+factura|suma\s+de\s+plata|valoare\s+totala|de\s+achitat|total\s+due|amount\s+due|grand\s+total|balance\s+due|total\s+amount)\s*[:\-\=]?\s*(?:RON|LEI|EUR|USD|\$|€|£)?\s*([\d\.,]+)",
-        r"(?<!sub)(?<!fara\s)\btotal\s*[:\-\=]\s*(?:RON|LEI|EUR|USD|\$|€|£)?\s*([\d\.,]+)",
+        r"(?:total\s+de\s+plata|total\s+general|total\s+factura|suma\s+de\s+plata|valoare\s+totala|de\s+achitat|total\s+due|amount\s+due|grand\s+total|balance\s+due|total\s+amount)\s*[:\-\=]?\s*(?:RON|LEI|EUR|USD|GBP|\$|€|£)?\s*([\d\.,]+)",
+        r"(?<!sub)(?<!sub\-)(?<!fara\s)\btotal\s*[:\-\=]?\s*(?:RON|LEI|EUR|USD|GBP|\$|€|£)\s*([\d\.,]+)",
+        r"(?<!sub)(?<!sub\-)(?<!fara\s)\btotal\s*[:\-\=]\s*(?:RON|LEI|EUR|USD|GBP|\$|€|£)?\s*([\d\.,]+)",
     ]
 }
 
-FORME_JURIDICE = r"\b(?:S\.?R\.?L\.?|S\.?A\.?|P\.?F\.?A\.?|I\.?I\.?|INC\.?|LLC|LTD\.?|CORP\.?|GMBH)\b"
+FORME_JURIDICE = r"\b(?:S\.?R\.?L\.?|S\.?A\.?|P\.?F\.?A\.?|I\.?I\.?|INC\.?|LLC|LTD\.?|CORP\.?|CORPORATION|GMBH|PLC|LLP)\b"
 
 
-def extrage_text_din_pdf(cale_pdf):
+def extrage_text_din_pdf(cale_sau_bytes_pdf):
     text_complet = ""
-    with pdfplumber.open(cale_pdf) as pdf:
+    with pdfplumber.open(cale_sau_bytes_pdf) as pdf:
         for pagina in pdf.pages:
             text_pagina = pagina.extract_text()
             if text_pagina:
@@ -51,8 +59,27 @@ def extrage_text_din_pdf(cale_pdf):
     return text_complet
 
 
+def detecteaza_stil_numar( date_extrase):
+    """Detectează dacă factura folosește formatul EN (1,150.00) sau RO (1.500,00)."""
+    for camp in ["Total_Plata", "Subtotal", "TVA_VAT"]:
+        val = date_extrase.get(camp, "Negasit")
+        if val != "Negasit" and "." in val:
+            # Dacă punctul este urmat de exact 2 cifre la final, este format englezesc
+            if re.search(r"\.\d{2}$", val.strip()):
+                return "EN"
+    return "RO"
+
+
+def formateaza_numar(valoare_float, stil="RO"):
+    """Formatează numărul calculat în stilul nativ al facturii (RO sau EN)."""
+    format_en = f"{valoare_float:,.2f}"
+    if stil == "EN":
+        return format_en
+    return format_en.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def transforma_in_numar(text_suma):
-    if text_suma == "Negasit":
+    if not text_suma or text_suma == "Negasit":
         return None
     curat = text_suma.strip()
     if "," in curat and (curat.rfind(",") > curat.rfind(".")):
@@ -66,17 +93,18 @@ def transforma_in_numar(text_suma):
 
 
 def completeaza_sume_contabile(date_extrase):
+    stil = detecteaza_stil_numar(date_extrase)
     sub = transforma_in_numar(date_extrase["Subtotal"])
     tva = transforma_in_numar(date_extrase["TVA_VAT"])
     tot = transforma_in_numar(date_extrase["Total_Plata"])
 
     if sub is None and tot is not None and tva is not None:
-        date_extrase["Subtotal"] = f"{tot - tva:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        date_extrase["Subtotal"] = formateaza_numar(tot - tva, stil)
     elif tva is None and tot is not None and sub is not None:
-        date_extrase["TVA_VAT"] = f"{tot - sub:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        date_extrase["TVA_VAT"] = formateaza_numar(tot - sub, stil)
     elif sub is None and tva is None and tot is not None:
         date_extrase["Subtotal"] = date_extrase["Total_Plata"]
-        date_extrase["TVA_VAT"] = "0,00"
+        date_extrase["TVA_VAT"] = "0.00" if stil == "EN" else "0,00"
 
     return date_extrase
 
@@ -94,7 +122,7 @@ def analizeaza_text_factura(text, nume_fisier):
         "Total_Plata": "Negasit"
     }
 
-    # PASUL 1: Extracție prin reguli (Regex)
+    # PASUL 1: Extracție prin reguli bilingve (Regex)
     for camp_standard, lista_sabloane in SINONIME_CAMPURI.items():
         for sablon in lista_sabloane:
             potrivire = re.search(sablon, text, re.IGNORECASE)
@@ -102,7 +130,7 @@ def analizeaza_text_factura(text, nume_fisier):
                 date_extrase[camp_standard] = potrivire.group(1).strip()
                 break
 
-    # PASUL 2: Completare cu modelul nostru ML Custom (pentru câmpurile rămase "Negasit")
+    # PASUL 2: Completare cu modelul nostru ML Custom bilingv
     if nlp_custom is not None:
         doc_ml = nlp_custom(text)
         corespondenta_etichete = {
@@ -118,11 +146,13 @@ def analizeaza_text_factura(text, nume_fisier):
             if camp_tabel and date_extrase[camp_tabel] == "Negasit":
                 date_extrase[camp_tabel] = ent.text.strip()
 
-    # PASUL 3: Plasă de siguranță în antet pentru Furnizor fără etichetă
+    # PASUL 3: Plasă de siguranță în antet pentru Furnizor fără etichetă (SRL, LLC, INC, LTD)
     if date_extrase["Furnizor"] == "Negasit":
-        primele_randuri = [r.strip() for r in text.split("\n") if r.strip()][:5]
+        primele_randuri = [r.strip() for r in text.split("\n") if r.strip()][:6]
         for rand in primele_randuri:
-            if re.search(FORME_JURIDICE, rand, re.IGNORECASE) and not re.match(r"^(?:client|cumparator|beneficiar|bill\s+to)", rand, re.IGNORECASE):
+            if re.search(FORME_JURIDICE, rand, re.IGNORECASE) and not re.match(
+                r"^(?:client|cumparator|beneficiar|bill\s+to|billed\s+to|invoice)", rand, re.IGNORECASE
+            ):
                 date_extrase["Furnizor"] = rand
                 break
 
@@ -133,10 +163,11 @@ def analizeaza_text_factura(text, nume_fisier):
                 date_extrase["Furnizor"] = entitate.text.strip()
                 break
 
-    # PASUL 4: Verificare scutire TVA și calcul matematic pentru Subtotal / TVA
+    # PASUL 4: Scutire TVA / Tax Exempt și calcul matematic automat
     if date_extrase["TVA_VAT"] == "Negasit":
-        if re.search(r"scutire\s+tva|neplatitor\s+de\s+tva|vat\s+exempt|0%\s*vat", text, re.IGNORECASE):
-            date_extrase["TVA_VAT"] = "0,00"
+        if re.search(r"scutire\s+tva|neplatitor\s+de\s+tva|vat\s+exempt|tax\s+exempt|0%\s*(?:vat|tax)", text, re.IGNORECASE):
+            stil = detecteaza_stil_numar(date_extrase)
+            date_extrase["TVA_VAT"] = "0.00" if stil == "EN" else "0,00"
 
     return completeaza_sume_contabile(date_extrase)
 
@@ -146,7 +177,6 @@ def salveaza_excel_formatat(lista_rezultate, fisier_iesire_excel):
     with pd.ExcelWriter(fisier_iesire_excel, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Facturi")
         foaie = writer.sheets["Facturi"]
-        # Ajustăm automat lățimea fiecărei coloane după cel mai lung text
         for coloana in foaie.columns:
             lungime_maxima = max(len(str(celula.value or "")) for celula in coloana)
             litera_coloana = coloana[0].column_letter
@@ -155,6 +185,8 @@ def salveaza_excel_formatat(lista_rezultate, fisier_iesire_excel):
 
 def proceseaza_folder_facturi(folder_intrare, fisier_iesire_excel):
     lista_rezultate = []
+    if not os.path.exists(folder_intrare):
+        return
 
     for fisier in sorted(os.listdir(folder_intrare)):
         if fisier.lower().endswith(".pdf"):
@@ -165,7 +197,7 @@ def proceseaza_folder_facturi(folder_intrare, fisier_iesire_excel):
 
     if lista_rezultate:
         salveaza_excel_formatat(lista_rezultate, fisier_iesire_excel)
-        print(f"Succes! Tabelul complet a fost salvat în '{fisier_iesire_excel}'.")
+        print(f"Succes! Tabelul bilingv a fost salvat în '{fisier_iesire_excel}'.")
 
 
 if __name__ == "__main__":
