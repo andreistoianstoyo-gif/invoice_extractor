@@ -108,6 +108,35 @@ def completeaza_sume_contabile(date_extrase):
 
     return date_extrase
 
+def detecteaza_moneda(text):
+    """Identifică moneda facturii (USD, EUR, GBP, RON) din zona totalului sau din întregul text."""
+    mapare_simboluri = {
+        "$": "USD", "USD": "USD",
+        "€": "EUR", "EUR": "EUR",
+        "£": "GBP", "GBP": "GBP",
+        "RON": "RON", "LEI": "RON"
+    }
+    # 1. Căutăm moneda chiar pe rândul cu Totalul sau Subtotalul
+    potrivire_total = re.search(
+        r"(?:total|amount\s+due|balance\s+due|subtotal)[^\n\r]{0,30}?(RON|LEI|EUR|USD|GBP|\$|€|£)",
+        text,
+        re.IGNORECASE
+    )
+    if potrivire_total:
+        simbol = potrivire_total.group(1).upper()
+        return mapare_simboluri.get(simbol, simbol)
+
+    # 2. Dacă nu e lângă total, căutăm în tot textul facturii
+    for regex, cod_moneda in [
+        (r"(?:\$|\bUSD\b)", "USD"),
+        (r"(?:£|\bGBP\b)", "GBP"),
+        (r"(?:€|\bEUR\b)", "EUR"),
+        (r"\b(?:RON|LEI)\b", "RON"),
+    ]:
+        if re.search(regex, text, re.IGNORECASE):
+            return cod_moneda
+
+    return "RON"
 
 def analizeaza_text_factura(text, nume_fisier):
     date_extrase = {
@@ -119,7 +148,8 @@ def analizeaza_text_factura(text, nume_fisier):
         "Data_Factura": "Negasit",
         "Subtotal": "Negasit",
         "TVA_VAT": "Negasit",
-        "Total_Plata": "Negasit"
+        "Total_Plata": "Negasit",
+        "Moneda": detecteaza_moneda(text)
     }
 
     # PASUL 1: Extracție prin reguli bilingve (Regex)
