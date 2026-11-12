@@ -8,7 +8,7 @@ import pandas as pd
 nlp_general = spacy.load("ro_core_news_sm")
 nlp_custom = spacy.load("model_facturi_ml") if os.path.exists("model_facturi_ml") else None
 
-# 2. Dicționar bilingv (Română + Engleză) fără erori de formatare
+ #2. Dicționar bilingv (Română + Engleză) fără erori de formatare
 SINONIME_CAMPURI = {
     "Furnizor": [
         r"(?:furnizor|firma|distribuitor|vanzator|prestator|emitent|unitate\s+emitenta|vendor|billed\s+by|billed\s+from|company|supplier|from)\s*[:\-]\s*\n?\s*([A-Za-z0-9][^\n\r\|]+)",
@@ -42,6 +42,8 @@ SINONIME_CAMPURI = {
         r"(?<!sub)(?<!sub\-)(?<!fara\s)\btotal\s*[:\-\=]\s*(?:RON|LEI|EUR|USD|GBP|\$|€|£)?\s*(\d[\d\.,]*)",
     ]
 }
+
+FORME_JURIDICE = r"\b(?:S\.?R\.?L\.?|S\.?A\.?|P\.?F\.?A\.?|I\.?I\.?|INC\.?|LLC|LTD\.?|CORP\.?|CORPORATION|GMBH|PLC|LLP)\b"
 
 def extrage_text_din_pdf(cale_sau_bytes_pdf):
     text_complet = ""
