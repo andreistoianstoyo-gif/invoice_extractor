@@ -34,6 +34,7 @@ class FacturaRow(BaseModel):
 
 class ExportPayload(BaseModel):
     invoices: List[FacturaRow]
+    lang: str = "ro"
 
 
 # 2. Ruta principală "/" care afișează site-ul când intri pe http://127.0.0.1:8000
@@ -64,29 +65,41 @@ async def extrage_facturi_client(files: List[UploadFile] = File(...)):
 
 # 4. Generarea Excel-ului în RAM (păstrează și editările făcute de client pe site!)
 @app.post("/api/export-excel")
+@app.post("/api/export-excel")
 def exporta_excel_personalizat(payload: ExportPayload):
-    # Transformăm rândurile primite din site într-un tabel pandas
     date_tabel = [rand.model_dump() for rand in payload.invoices]
     df = pd.DataFrame(date_tabel)
 
-    # Creăm fișierul Excel în memoria RAM
+    # Dacă utilizatorul are comutatorul pe EN, traducem și coloanele și valorile "Negasit" din Excel
+    if payload.lang == "en" and not df.empty:
+        df = df.replace("Negasit", "Not Found")
+        df = df.rename(columns={
+            "Fisier": "File",
+            "Furnizor": "Vendor",
+            "Client": "Client",
+            "CUI": "Tax_ID_VAT",
+            "Numar_Factura": "Invoice_No",
+            "Data_Factura": "Invoice_Date",
+            "Subtotal": "Subtotal",
+            "TVA_VAT": "VAT_Tax",
+            "Total_Plata": "Grand_Total"
+        })
+
+    nume_foaie = "Extracted Invoices" if payload.lang == "en" else "Facturi Extrase"
     excel_in_ram = io.BytesIO()
     with pd.ExcelWriter(excel_in_ram, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Facturi Extrase")
-        foaie = writer.sheets["Facturi Extrase"]
-
-        # Lărgim automat coloanele ca să nu apară textul tăiat
+        df.to_excel(writer, index=False, sheet_name=nume_foaie)
+        foaie = writer.sheets[nume_foaie]
         for coloana in foaie.columns:
             lungime_max = max(len(str(celula.value or "")) for celula in coloana)
             litera = coloana[0].column_letter
             foaie.column_dimensions[litera].width = lungime_max + 4
 
-    # Mutăm cursorul la începutul fișierului din RAM și îl trimitem spre descărcare
     excel_in_ram.seek(0)
     return StreamingResponse(
         excel_in_ram,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=raport_facturi.xlsx"}
+        headers={"Content-Disposition": "attachment; filename=extracted_invoices.xlsx"}
     )
 
 
